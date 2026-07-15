@@ -1,10 +1,10 @@
-environment: live
+environment: live  # was "development" — required for ExecutionEngine to allow live mode (see execution.mode below; both must agree)
 
 market_data:
   connection:
     rest_base_url: "https://api.derivws.com"
     ws_public_url: "wss://api.derivws.com/trading/v1/options/ws/public"
-    ws_account_type: "demo"       # demo | real — only used when api_token is set
+    ws_account_type: "demo"       # demo | real — only used when api_token is set. Leave as "demo" for the dry run.
     app_id: "1089"                 # replace with your real Deriv app_id
     api_token: null                # set for authenticated access; null = public market data only
     account_id: null               # e.g. "DOT90004580" — required if api_token is set
@@ -33,7 +33,10 @@ market_data:
     duplicate_timestamp_policy: "drop_duplicate"
 
   storage:
-    backend: "sqlite"
+    backend: "sqlite"              # overridden to "supabase" by the STORAGE_BACKEND Railway env var — left as-is here on purpose
     sqlite_path: "./data_store/ticks.db"
     write_batch_size: 500
     flush_interval_seconds: 2.0
+
+execution:
+  mode: live  # was unset (defaulted to "paper") — the second of the two rails ExecutionEngine checks; both this and environment: live must agree, or it refuses to construct
