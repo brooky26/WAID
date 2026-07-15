@@ -11,18 +11,10 @@ Deriv retired the legacy pattern of connecting directly to
       (wss://api.derivws.com/trading/v1/options/ws/public)
 
   Authenticated (needed for anything beyond public ticks/candles):
-      0. If account_id isn't configured: GET {rest_base_url}/trading/v1/options/accounts
-         (same auth headers) and pick the first account matching
-         ws_account_type (demo|real) — resolved once, then cached and
-         reused for every subsequent OTP request/reconnect.
       1. POST {rest_base_url}/trading/v1/options/accounts/{account_id}/otp
          headers: Deriv-App-ID: <app_id>, Authorization: Bearer <api_token>
       2. Response: {"data": {"url": "wss://.../ws/demo?otp=..."}}
       3. Connect directly to that URL.
-
-account_id is therefore optional even in authenticated mode: set it
-explicitly to skip the lookup, or leave it unset and it will be resolved
-automatically from the token on first connect.
 
 OTP tokens are short-lived. This client requests a fresh OTP on every
 reconnect (not just the first connect) — reusing a stale OTP after a
@@ -73,67 +65,23 @@ class DerivOTPBootstrap:
 
     def __init__(self, config: DerivConnectionConfig) -> None:
         self._config = config
-        # Resolved lazily from the API if config.account_id is None; cached
-        # here (not written back onto the config model) so we only ever
-        # look it up once per process, on the first authenticated connect.
-        self._resolved_account_id: str | None = None
-
-    def _auth_headers(self) -> dict[str, str]:
-        return {
-            "Deriv-App-ID": self._config.app_id,
-            "Authorization": f"Bearer {self._config.api_token}",
-        }
-
-    async def _resolve_account_id(self, session: aiohttp.ClientSession) -> str:
-        """GET .../trading/v1/options/accounts and pick the first account
-        matching config.ws_account_type (demo|real). Only called when
-        account_id wasn't set explicitly in config/env."""
-        endpoint = f"{self._config.rest_base_url}/trading/v1/options/accounts"
-        async with session.get(endpoint, headers=self._auth_headers()) as resp:
-            payload = await resp.json()
-            if resp.status != 200:
-                errors = payload.get("errors", payload)
-                raise DerivClientError(
-                    f"Account lookup failed (status={resp.status}): {errors}"
-                )
-        accounts = payload.get("data", payload)
-        if isinstance(accounts, dict):
-            accounts = accounts.get("accounts", accounts.get("data", []))
-        for acc in accounts or []:
-            if acc.get("account_type") == self._config.ws_account_type:
-                acc_id = acc.get("account_id") or acc.get("id")
-                if acc_id:
-                    logger.info(
-                        "Resolved %s account_id=%s from API token",
-                        self._config.ws_account_type,
-                        acc_id,
-                    )
-                    return acc_id
-        raise DerivClientError(
-            f"No '{self._config.ws_account_type}' account found via "
-            f"{endpoint}. Set account_id explicitly (DERIV_ACCOUNT_ID) or "
-            f"create one first. Accounts returned: {payload}"
-        )
 
     async def fetch_authenticated_ws_url(self) -> str:
         if not self._config.is_authenticated_mode:
             raise DerivClientError(
-                "fetch_authenticated_ws_url called without api_token configured."
+                "fetch_authenticated_ws_url called without api_token/account_id configured."
             )
+        endpoint = (
+            f"{self._config.rest_base_url}/trading/v1/options/accounts/"
+            f"{self._config.account_id}/otp"
+        )
+        headers = {
+            "Deriv-App-ID": self._config.app_id,
+            "Authorization": f"Bearer {self._config.api_token}",
+        }
         timeout = aiohttp.ClientTimeout(total=self._config.request_timeout_seconds)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            account_id = (
-                self._config.account_id
-                or self._resolved_account_id
-                or await self._resolve_account_id(session)
-            )
-            self._resolved_account_id = account_id
-
-            endpoint = (
-                f"{self._config.rest_base_url}/trading/v1/options/accounts/"
-                f"{account_id}/otp"
-            )
-            async with session.post(endpoint, headers=self._auth_headers()) as resp:
+            async with session.post(endpoint, headers=headers) as resp:
                 payload = await resp.json()
                 if resp.status != 200:
                     errors = payload.get("errors", payload)
@@ -343,7 +291,6 @@ class DerivWebSocketClient:
             "start": 1,
             "style": "candles",
             "granularity": granularity,
-            "subscribe": 0,
             "req_id": req_id,
         }
         future: asyncio.Future = asyncio.get_event_loop().create_future()
